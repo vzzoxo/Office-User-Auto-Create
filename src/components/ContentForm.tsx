@@ -1,8 +1,13 @@
-import React, {useState, useEffect} from 'react'
+import React, {useState, useEffect, useRef, useCallback} from 'react'
 import {Spin, Form, Button, Input, message, Row, Col, Select} from 'antd'
 import {CopyOutlined, KeyOutlined, MailOutlined} from '@ant-design/icons'
 import copy from 'copy-to-clipboard'
 
+declare global {
+    interface Window {
+        turnstile: any
+    }
+}
 
 export default function ContentForm() {
     const [spinning, setSpinning] = useState(false)
@@ -14,20 +19,37 @@ export default function ContentForm() {
             },
         ],
         domains: [],
-        getCodeLink: ''
+        getCodeLink: '',
+        turnstileSiteKey: ''
     })
     const [createdAccount, setCreatedAccount] = useState({
         email: '',
         password: '',
     })
+    const turnstileToken = useRef('')
+    const turnstileRef = useRef<HTMLDivElement>(null)
+    const widgetId = useRef<string | null>(null)
 
-    const onFinish = (formData: object) => {
+    const renderTurnstile = useCallback((siteKey: string) => {
+        if (!turnstileRef.current || !window.turnstile || !siteKey) return
+        if (widgetId.current !== null) return
+        widgetId.current = window.turnstile.render(turnstileRef.current, {
+            sitekey: siteKey,
+            callback: (token: string) => { turnstileToken.current = token },
+        })
+    }, [])
+
+    const onFinish = (formData: any) => {
+        if (!turnstileToken.current) {
+            message.error('Please complete human verification')
+            return
+        }
         setSpinning(true)
         fetch(
             `${process.env.REACT_APP_API_BASE_URL}getOffice`,
             {
                 method: 'POST',
-                body: JSON.stringify(formData)
+                body: JSON.stringify({...formData, turnstileToken: turnstileToken.current})
             }
         )
             .then(r => {
@@ -41,9 +63,15 @@ export default function ContentForm() {
                         }
                     })
                 setSpinning(false)
+                // Reset turnstile after submission
+                if (window.turnstile && widgetId.current !== null) {
+                    window.turnstile.reset(widgetId.current)
+                    turnstileToken.current = ''
+                }
             })
             .catch(e => {
                 message.error(JSON.stringify(e))
+                setSpinning(false)
             })
     }
 
@@ -56,13 +84,20 @@ export default function ContentForm() {
                 r.json()
                     .then(data => {
                         setOfficeConfig(data)
+                        // Render turnstile after config loaded
+                        const waitForTurnstile = setInterval(() => {
+                            if (window.turnstile) {
+                                clearInterval(waitForTurnstile)
+                                renderTurnstile(data.turnstileSiteKey)
+                            }
+                        }, 200)
                     })
                 setSpinning(false)
             })
             .catch(e => {
                 message.error(JSON.stringify(e))
             })
-    }, [])
+    }, [renderTurnstile])
 
 
     const CreatedForm = (
@@ -170,6 +205,10 @@ export default function ContentForm() {
                            >获取激活码</a>
                        )}
                 />
+            </Form.Item>
+
+            <Form.Item wrapperCol={{offset: 4, span: 20}}>
+                <div ref={turnstileRef} style={{marginBottom: 16}}></div>
             </Form.Item>
 
             <Form.Item style={{float: 'right'}}>
